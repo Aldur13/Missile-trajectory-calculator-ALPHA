@@ -1,12 +1,19 @@
 """Tkinter GUI front-end, launched automatically when run with no CLI arguments.
 
-Lets the user load two photos, click the missile's position in each, and
-Calculate — using sensible defaults for any parameter left blank. An optional
-"stereo" mode adds a second camera + calibration file for accurate 3D
-triangulation; without it, a single-camera best-effort approximation is used
-(see trajcalc.monocular).
+Two modes, both using sensible pre-filled defaults the user can override:
+- "2 photos": clicks the missile in a photo at each of two moments in flight
+  and solves for its velocity from the displacement between them.
+- "1 photo": clicks the missile in a single photo and instead asks the user
+  for an assumed launch speed/angle (defaulted, but editable) — much rougher,
+  but usable when only one photo exists.
+
+An optional "stereo" mode (2-photo only) adds a second camera + calibration
+file for accurate 3D triangulation; without it, a single-camera best-effort
+approximation is used (see trajcalc.monocular).
 """
 from __future__ import annotations
+
+import math
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -27,6 +34,9 @@ DEFAULTS = {
     "distance": 100.0,
     "fov_deg": 60.0,
     "camera_height": 1.5,
+    "speed": 50.0,
+    "elevation_deg": 45.0,
+    "azimuth_deg": 0.0,
 }
 
 
@@ -113,35 +123,86 @@ def _read_float(var, default, name, assumptions):
         return default
 
 
-class App(ttk.Frame):
-    def __init__(self, root):
-        super().__init__(root, padding=10)
+class ScrollableContainer(ttk.Frame):
+    """A vertically scrollable area — content taller than the window stays reachable."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
         self.pack(fill="both", expand=True)
-        root.title("Missile Trajectory Calculator (ALPHA)")
+
+        canvas = tk.Canvas(self, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        self.body = ttk.Frame(canvas)
+        body_id = canvas.create_window((0, 0), window=self.body, anchor="nw")
+
+        def on_body_configure(_event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def on_canvas_configure(event):
+            canvas.itemconfig(body_id, width=event.width)
+
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        self.body.bind("<Configure>", on_body_configure)
+        canvas.bind("<Configure>", on_canvas_configure)
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
+
+
+class App(ttk.Frame):
+    def __init__(self, parent):
+        super().__init__(parent, padding=10)
+        self.pack(fill="both", expand=True)
 
         self.cameras = None
 
         ttk.Label(
             self,
-            text="Load a photo of the missile at two moments, click its position in each, "
-            "then Calculate. Leave any parameter blank to use a reasonable default.",
+            text="Click the missile's position in one or two photos, then Calculate. "
+            "Leave any parameter blank to use a reasonable default.",
             wraplength=780,
         ).pack(anchor="w", pady=(0, 8))
 
+        self.mode_var = tk.StringVar(value="2photo")
+        mode_row = ttk.Frame(self)
+        mode_row.pack(anchor="w", pady=(0, 8))
+        ttk.Radiobutton(
+            mode_row,
+            text="2 photos (recommended — solves velocity from the missile's motion)",
+            variable=self.mode_var,
+            value="2photo",
+            command=self._toggle_mode,
+        ).pack(anchor="w")
+        ttk.Radiobutton(
+            mode_row,
+            text="1 photo (rougher — you provide an estimated speed & angle instead)",
+            variable=self.mode_var,
+            value="1photo",
+            command=self._toggle_mode,
+        ).pack(anchor="w")
+
         images_row = ttk.Frame(self)
         images_row.pack(fill="x")
-        self.picker_t1 = ImagePicker(images_row, "Point 1 (earlier)")
+        self.picker_t1 = ImagePicker(images_row, "Point 1")
         self.picker_t1.pack(side="left", padx=4)
-        self.picker_t2 = ImagePicker(images_row, "Point 2 (later)")
-        self.picker_t2.pack(side="left", padx=4)
+        self.picker_t2_holder = ttk.Frame(images_row)
+        self.picker_t2_holder.pack(side="left", padx=4)
+        self.picker_t2 = ImagePicker(self.picker_t2_holder, "Point 2 (later)")
+        self.picker_t2.pack()
 
         self.stereo_var = tk.BooleanVar(value=False)
+        self.stereo_check_holder = ttk.Frame(self)
+        self.stereo_check_holder.pack(anchor="w", pady=(8, 0))
         ttk.Checkbutton(
-            self,
+            self.stereo_check_holder,
             text="Advanced: I have a second camera + calibration file (accurate 3D triangulation)",
             variable=self.stereo_var,
             command=self._toggle_stereo,
-        ).pack(anchor="w", pady=(8, 0))
+        ).pack(anchor="w")
 
         self.stereo_frame = ttk.Frame(self)
         cal_row = ttk.Frame(self.stereo_frame)
@@ -164,10 +225,23 @@ class App(ttk.Frame):
         right = ttk.Frame(params)
         right.pack(side="left", padx=10, pady=6)
 
-        self.var_dt = _labeled_entry(left, "Time between photos (s)", DEFAULTS["dt"])
+        self.dt_row = ttk.Frame(left)
+        self.dt_row.pack(fill="x")
+        self.var_dt = _labeled_entry(self.dt_row, "Time between photos (s)", DEFAULTS["dt"])
         self.var_mass = _labeled_entry(left, "Mass (kg)", DEFAULTS["mass"])
         self.var_area = _labeled_entry(left, "Cross-sectional area (m^2)", DEFAULTS["area"])
         self.var_drag = _labeled_entry(left, "Drag coefficient", DEFAULTS["drag_coeff"])
+
+        self.one_photo_row = ttk.Frame(left)
+        self.var_speed = _labeled_entry(self.one_photo_row, "Assumed launch speed (m/s)", DEFAULTS["speed"])
+        self.var_elevation = _labeled_entry(
+            self.one_photo_row, "Assumed launch angle above horizontal (deg)", DEFAULTS["elevation_deg"]
+        )
+        self.var_azimuth = _labeled_entry(
+            self.one_photo_row, "Assumed horizontal direction (deg, 0 = straight from camera)",
+            DEFAULTS["azimuth_deg"],
+        )
+
         self.var_density = _labeled_entry(right, "Air density (kg/m^3)", DEFAULTS["air_density"])
         self.var_ground_z = _labeled_entry(right, "Ground elevation (m)", DEFAULTS["ground_z"])
         self.var_distance = _labeled_entry(
@@ -185,6 +259,20 @@ class App(ttk.Frame):
 
         self.plot_frame = ttk.Frame(self)
         self.plot_frame.pack(fill="both", expand=True, pady=(8, 0))
+
+    def _toggle_mode(self):
+        if self.mode_var.get() == "2photo":
+            self.picker_t2_holder.pack(side="left", padx=4)
+            self.stereo_check_holder.pack(anchor="w", pady=(8, 0))
+            self.dt_row.pack(fill="x")
+            self.one_photo_row.pack_forget()
+        else:
+            self.picker_t2_holder.pack_forget()
+            self.stereo_check_holder.pack_forget()
+            self.stereo_frame.pack_forget()
+            self.stereo_var.set(False)
+            self.dt_row.pack_forget()
+            self.one_photo_row.pack(fill="x")
 
     def _toggle_stereo(self):
         if self.stereo_var.get():
@@ -206,6 +294,78 @@ class App(ttk.Frame):
             messagebox.showerror("Calibration error", str(exc))
 
     def _calculate(self):
+        if self.mode_var.get() == "1photo":
+            self._calculate_one_photo()
+        else:
+            self._calculate_two_photo()
+
+    def _read_monocular_params(self, assumptions):
+        distance = _read_float(self.var_distance, DEFAULTS["distance"], "Assumed distance to missile", assumptions)
+        fov_deg = _read_float(self.var_fov, DEFAULTS["fov_deg"], "Camera FOV", assumptions)
+        camera_height = _read_float(self.var_camera_height, DEFAULTS["camera_height"], "Camera height", assumptions)
+        assumptions.append(
+            f"Single-camera mode: assumes a level camera aimed horizontally, "
+            f"{camera_height:.1f} m above the ground, with the missile at a roughly "
+            f"constant distance of {distance:.0f} m — an approximation, not a measurement."
+        )
+        return distance, fov_deg, camera_height
+
+    def _monocular_point(self, picker, distance, fov_deg, camera_height):
+        w, h = picker.original_size
+        cam = monocular.default_camera(w, h, fov_deg=fov_deg, camera_height=camera_height)
+        return monocular.pixel_to_point_at_distance(cam, picker.pixel, distance)
+
+    def _calculate_one_photo(self):
+        assumptions = []
+
+        if not self.picker_t1.is_ready():
+            messagebox.showwarning("Missing input", "Load a photo and click the missile's position first.")
+            return
+
+        mass = _read_float(self.var_mass, DEFAULTS["mass"], "Mass", assumptions)
+        area = _read_float(self.var_area, DEFAULTS["area"], "Cross-sectional area", assumptions)
+        drag_coeff = _read_float(self.var_drag, DEFAULTS["drag_coeff"], "Drag coefficient", assumptions)
+        air_density = _read_float(self.var_density, DEFAULTS["air_density"], "Air density", assumptions)
+        ground_z = _read_float(self.var_ground_z, DEFAULTS["ground_z"], "Ground elevation", assumptions)
+        speed = _read_float(self.var_speed, DEFAULTS["speed"], "Assumed launch speed", assumptions)
+        elevation_deg = _read_float(
+            self.var_elevation, DEFAULTS["elevation_deg"], "Assumed launch angle", assumptions
+        )
+        azimuth_deg = _read_float(
+            self.var_azimuth, DEFAULTS["azimuth_deg"], "Assumed horizontal direction", assumptions
+        )
+        assumptions.append(
+            "1-photo mode: velocity is not measured — it's entirely assumed from the "
+            "speed/angle values above. Only the starting position comes from the photo."
+        )
+
+        try:
+            distance, fov_deg, camera_height = self._read_monocular_params(assumptions)
+            p0 = self._monocular_point(self.picker_t1, distance, fov_deg, camera_height)
+
+            elevation = math.radians(elevation_deg)
+            azimuth = math.radians(azimuth_deg)
+            horizontal_speed = speed * math.cos(elevation)
+            v0 = (
+                horizontal_speed * math.cos(azimuth),
+                horizontal_speed * math.sin(azimuth),
+                speed * math.sin(elevation),
+            )
+
+            k = ballistics.drag_k(mass, area, drag_coeff, air_density)
+            trajectory = ballistics.simulate_trajectory(p0, v0, k, dt=0.001, t_max=300.0, ground_z=ground_z)
+        except Exception as exc:
+            messagebox.showerror("Calculation error", str(exc))
+            return
+
+        report = visualize.summarize(p0, v0, trajectory)
+        report += "\n\nAssumptions used:\n" + "\n".join(f"- {a}" for a in assumptions)
+
+        self.output.delete("1.0", "end")
+        self.output.insert("1.0", report)
+        self._show_plot(p0, None, trajectory)
+
+    def _calculate_two_photo(self):
         assumptions = []
 
         if not self.picker_t1.is_ready() or not self.picker_t2.is_ready():
@@ -239,22 +399,9 @@ class App(ttk.Frame):
                         "Stereo mode was checked but the calibration file or second camera's "
                         "photos weren't provided — fell back to single-camera approximation."
                     )
-                distance = _read_float(
-                    self.var_distance, DEFAULTS["distance"], "Assumed distance to missile", assumptions
-                )
-                fov_deg = _read_float(self.var_fov, DEFAULTS["fov_deg"], "Camera FOV", assumptions)
-                camera_height = _read_float(
-                    self.var_camera_height, DEFAULTS["camera_height"], "Camera height", assumptions
-                )
-                assumptions.append(
-                    f"Single-camera mode: assumes a level camera aimed horizontally, "
-                    f"{camera_height:.1f} m above the ground, with the missile at a roughly "
-                    f"constant distance of {distance:.0f} m — an approximation, not a measurement."
-                )
-                w, h = self.picker_t1.original_size
-                cam = monocular.default_camera(w, h, fov_deg=fov_deg, camera_height=camera_height)
-                p1 = monocular.pixel_to_point_at_distance(cam, self.picker_t1.pixel, distance)
-                p2 = monocular.pixel_to_point_at_distance(cam, self.picker_t2.pixel, distance)
+                distance, fov_deg, camera_height = self._read_monocular_params(assumptions)
+                p1 = self._monocular_point(self.picker_t1, distance, fov_deg, camera_height)
+                p2 = self._monocular_point(self.picker_t2, distance, fov_deg, camera_height)
 
             k = ballistics.drag_k(mass, area, drag_coeff, air_density)
             v0, result = ballistics.solve_initial_velocity(p1, p2, dt, k)
@@ -272,7 +419,6 @@ class App(ttk.Frame):
 
         self.output.delete("1.0", "end")
         self.output.insert("1.0", report)
-
         self._show_plot(p1, p2, trajectory)
 
     def _show_plot(self, p1, p2, trajectory):
@@ -287,7 +433,8 @@ class App(ttk.Frame):
         ax = fig.add_subplot(111, projection="3d")
         ax.plot(positions[:, 0], positions[:, 1], positions[:, 2], label="Fitted trajectory")
         ax.scatter(*p1, color="green", s=50, label="Point 1")
-        ax.scatter(*p2, color="orange", s=50, label="Point 2")
+        if p2 is not None:
+            ax.scatter(*p2, color="orange", s=50, label="Point 2")
         _, apogee_pos = trajectory["apogee"]
         ax.scatter(*apogee_pos, color="red", marker="^", s=70, label="Apogee")
         if trajectory["impact"] is not None:
@@ -305,5 +452,9 @@ class App(ttk.Frame):
 
 def launch():
     root = tk.Tk()
-    App(root)
+    root.title("Missile Trajectory Calculator (ALPHA)")
+    root.geometry("950x800")
+
+    scrollable = ScrollableContainer(root)
+    App(scrollable.body)
     root.mainloop()
