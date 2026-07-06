@@ -1,0 +1,35 @@
+# Stereo camera calibration.
+#
+# World frame: X/Y horizontal (meters), Z vertical (up), ground at Z=0.
+# Measure each camera's position in that frame (tape measure / GPS / survey),
+# and either point it at a known landmark (`look_at`) or supply an explicit
+# `rotation` matrix if you already have one from a calibration tool.
+#
+# fx/fy/cx/cy are pixel-unit intrinsics. Best obtained from a checkerboard
+# calibration (cv2.calibrateCamera); trajcalc.calibration.intrinsics_from_specs
+# gives a rougher estimate from focal length + sensor size if that's all you have.
+
+cameras:
+  A:
+    image_width: 4032
+    image_height: 3024
+    fx: 3000.0
+    fy: 3000.0
+    cx: 2016.0
+    cy: 1512.0
+    dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]  # k1, k2, p1, p2, k3
+    position: [0.0, -50.0, 1.5]              # camera center, meters
+    look_at: [30.0, 0.0, 15.0]               # point the camera is aimed at
+    up: [0.0, 0.0, 1.0]
+
+  B:
+    image_width: 4032
+    image_height: 3024
+    fx: 3000.0
+    fy: 3000.0
+    cx: 2016.0
+    cy: 1512.0
+    dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]
+    position: [80.0, -20.0, 1.5]
+    look_at: [30.0, 0.0, 15.0]
+    up: [0.0, 0.0, 1.0]

@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+trajectory_overlay.png
