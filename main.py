@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from typing import Optional
 
 from trajcalc import ballistics, calibration, picker, triangulate, visualize
@@ -60,6 +61,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main():
+    if len(sys.argv) == 1:
+        from trajcalc import gui
+
+        gui.launch()
+        return
+
     args = build_arg_parser().parse_args()
 
     cameras = calibration.load_calibration(args.calibration)

@@ -1,22 +1,27 @@
 # Missile Trajectory Calculator (ALPHA)
 
-Reconstructs a missile's 3D flight trajectory from two stereo-camera photo
-pairs taken at two different moments in flight, then fits a projectile
-motion model (gravity + quadratic air drag) to predict apogee, impact point,
-and time of flight.
+Reconstructs a missile's 3D flight trajectory from photos taken at two
+different moments in flight, then fits a projectile motion model (gravity +
+quadratic air drag) to predict apogee, impact point, and time of flight.
 
 ## How it works
 
-1. **Stereo triangulation.** Each moment in time (`t1`, `t2`) needs a
-   synchronized photo pair from two calibrated cameras (A and B) at known
-   positions/orientations. Clicking the missile's pixel location in both
-   photos of a pair triangulates its 3D world position at that instant.
-2. **Trajectory fit.** Given the two triangulated 3D points, the time gap
-   between them, and known physical parameters of the missile (mass,
-   cross-sectional area, drag coefficient, air density), a shooting-method
-   solver finds the initial velocity vector at `t1` that reaches the observed
-   point at `t2`. That velocity is then integrated forward (RK4) to produce
-   the full trajectory, apogee, and impact point.
+1. **Getting a 3D position at each moment.**
+   - **Single camera (default):** click the missile's pixel in one photo at
+     each of the two moments. Since one camera can't recover true depth from
+     a single view, this assumes the missile stayed at a roughly constant
+     distance from the camera — an approximation, not a measurement, but
+     usable when you only have one vantage point.
+   - **Stereo (optional, more accurate):** with a second, calibrated camera,
+     each moment gets a synchronized photo pair, and the missile's pixel in
+     both photos triangulates its true 3D position — no distance assumption
+     needed.
+2. **Trajectory fit.** Given the two 3D points, the time gap between them,
+   and known physical parameters of the missile (mass, cross-sectional area,
+   drag coefficient, air density), a shooting-method solver finds the
+   initial velocity vector at `t1` that reaches the observed point at `t2`.
+   That velocity is then integrated forward (RK4) to produce the full
+   trajectory, apogee, and impact point.
 
 **Note:** with drag included, two observed points are not enough to solve for
 *both* velocity and drag coefficient — you supply the drag parameters, and
@@ -28,7 +33,22 @@ the solver only searches over the initial velocity vector.
 pip install -r requirements.txt
 ```
 
-## Camera calibration
+## GUI (default)
+
+Run with no arguments (or just double-click the packaged `.exe`) to open the
+GUI:
+
+```
+python main.py
+```
+
+Load a photo for Point 1 and Point 2, click the missile's position in each,
+and press Calculate — any parameter left blank falls back to a reasonable
+default (listed in the output under "Assumptions used"). Check "Advanced: I
+have a second camera + calibration file" to switch to accurate stereo
+triangulation instead of the single-camera approximation.
+
+## Camera calibration (stereo mode only)
 
 Copy `config/calibration.example.yaml` and fill in your own two cameras:
 
@@ -37,7 +57,7 @@ Copy `config/calibration.example.yaml` and fill in your own two cameras:
 - `fx/fy/cx/cy`: pixel intrinsics, ideally from a checkerboard calibration (`cv2.calibrateCamera`). `trajcalc.calibration.intrinsics_from_specs()` gives a rougher estimate from focal length + sensor size if that's all you have.
 - `dist_coeffs`: lens distortion `[k1, k2, p1, p2, k3]`, default zero.
 
-## Running
+## CLI (scripting / stereo without the GUI)
 
 ```
 python main.py \
